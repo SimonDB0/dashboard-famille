@@ -1,78 +1,79 @@
-import Database from "better-sqlite3";
-import path from "node:path";
-import fs from "node:fs";
+import { neon } from "@neondatabase/serverless";
 
-// Base SQLite dans data/famille.db — créée et remplie automatiquement au premier lancement.
-const dir = path.join(process.cwd(), "data");
-fs.mkdirSync(dir, { recursive: true });
+// Base Postgres (Neon). DATABASE_URL est ajoutée automatiquement par l'intégration Neon sur Vercel.
+// En local : copie la valeur dans un fichier .env.local (voir README).
+const url = process.env.DATABASE_URL;
 
-const g = globalThis as unknown as { db?: Database.Database };
-export const db = g.db ?? new Database(path.join(dir, "famille.db"));
-if (!g.db) {
-  g.db = db;
-  db.pragma("journal_mode = WAL");
-  db.pragma("foreign_keys = ON");
-  migrate();
-}
+// URL factice si absente, pour que le build passe ; ensureDb() donne alors une erreur claire.
+export const sql = neon(url ?? "postgresql://user:pass@missing.invalid/db");
 
 // ---------- Types
 export type Member = { id: number; name: string; color: string; emoji: string };
 export type Recurring = { id: number; title: string; weekday: number; time: string | null; member_id: number | null };
 export type Event = { id: number; title: string; date: string; time: string | null; member_id: number | null };
 export type Meal = { date: string; slot: string; name: string };
-export type Task = { id: number; title: string; done: number; member_id: number | null };
-export type ShoppingItem = { id: number; name: string; checked: number };
+export type Task = { id: number; title: string; done: boolean; member_id: number | null };
+export type ShoppingItem = { id: number; name: string; checked: boolean };
 
-function migrate() {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS member (
-      id INTEGER PRIMARY KEY, name TEXT NOT NULL, color TEXT NOT NULL, emoji TEXT NOT NULL DEFAULT '🙂'
-    );
-    -- weekday : 1 = lundi … 7 = dimanche
-    CREATE TABLE IF NOT EXISTS recurring_event (
-      id INTEGER PRIMARY KEY, title TEXT NOT NULL, weekday INTEGER NOT NULL, time TEXT,
-      member_id INTEGER REFERENCES member(id) ON DELETE SET NULL
-    );
-    -- date au format AAAA-MM-JJ, time HH:MM ou NULL (toute la journée)
-    CREATE TABLE IF NOT EXISTS event (
-      id INTEGER PRIMARY KEY, title TEXT NOT NULL, date TEXT NOT NULL, time TEXT,
-      member_id INTEGER REFERENCES member(id) ON DELETE SET NULL
-    );
-    CREATE TABLE IF NOT EXISTS meal (
-      date TEXT NOT NULL, slot TEXT NOT NULL DEFAULT 'soir', name TEXT NOT NULL,
-      PRIMARY KEY (date, slot)
-    );
-    CREATE TABLE IF NOT EXISTS task (
-      id INTEGER PRIMARY KEY, title TEXT NOT NULL, done INTEGER NOT NULL DEFAULT 0,
-      member_id INTEGER REFERENCES member(id) ON DELETE SET NULL
-    );
-    CREATE TABLE IF NOT EXISTS shopping_item (
-      id INTEGER PRIMARY KEY, name TEXT NOT NULL, checked INTEGER NOT NULL DEFAULT 0,
-      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-    );
-  `);
-
-  const { n } = db.prepare("SELECT COUNT(*) AS n FROM member").get() as { n: number };
-  if (n === 0) seed();
+// Création des tables + données de départ, une seule fois par instance du serveur.
+let ready: Promise<void> | null = null;
+export function ensureDb() {
+  ready ??= migrate().catch((e) => {
+    ready = null;
+    throw e;
+  });
+  return ready;
 }
 
-function seed() {
-  const addMember = db.prepare("INSERT INTO member (name, color, emoji) VALUES (?, ?, ?)");
-  const addRec = db.prepare("INSERT INTO recurring_event (title, weekday, time, member_id) VALUES (?, ?, ?, ?)");
+async function migrate() {
+  if (!url) throw new Error("DATABASE_URL manquante : ajoute la base Neon au projet (voir README).");
+  await sql`CREATE TABLE IF NOT EXISTS member (
+    id SERIAL PRIMARY KEY, name TEXT NOT NULL, color TEXT NOT NULL, emoji TEXT NOT NULL DEFAULT '🙂'
+  )`;
+  // weekday : 1 = lundi … 7 = dimanche
+  await sql`CREATE TABLE IF NOT EXISTS recurring_event (
+    id SERIAL PRIMARY KEY, title TEXT NOT NULL, weekday INT NOT NULL, time TEXT,
+    member_id INT REFERENCES member(id) ON DELETE SET NULL
+  )`;
+  // date au format AAAA-MM-JJ, time HH:MM ou NULL (toute la journée)
+  await sql`CREATE TABLE IF NOT EXISTS event (
+    id SERIAL PRIMARY KEY, title TEXT NOT NULL, date TEXT NOT NULL, time TEXT,
+    member_id INT REFERENCES member(id) ON DELETE SET NULL
+  )`;
+  await sql`CREATE TABLE IF NOT EXISTS meal (
+    date TEXT NOT NULL, slot TEXT NOT NULL DEFAULT 'soir', name TEXT NOT NULL, PRIMARY KEY (date, slot)
+  )`;
+  await sql`CREATE TABLE IF NOT EXISTS task (
+    id SERIAL PRIMARY KEY, title TEXT NOT NULL, done BOOLEAN NOT NULL DEFAULT false,
+    member_id INT REFERENCES member(id) ON DELETE SET NULL
+  )`;
+  await sql`CREATE TABLE IF NOT EXISTS shopping_item (
+    id SERIAL PRIMARY KEY, name TEXT NOT NULL, checked BOOLEAN NOT NULL DEFAULT false,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`;
 
-  db.transaction(() => {
-    const simon = addMember.run("Simon", "#2f6fde", "👨").lastInsertRowid;
-    addMember.run("Estelle", "#c2410c", "👩");
-    const leonie = addMember.run("Léonie", "#a21caf", "👧").lastInsertRowid;
-    const eva = addMember.run("Eva", "#059669", "👶").lastInsertRowid;
+  const [{ n }] = (await sql`SELECT COUNT(*)::int AS n FROM member`) as { n: number }[];
+  if (n === 0) await seed();
+}
 
-    for (let d = 1; d <= 5; d++) addRec.run("Travail GXO", d, "07:00", simon);
-    for (const d of [1, 2, 4, 5]) addRec.run("École", d, "08:30", leonie);
-    addRec.run("École (matin)", 3, "08:30", leonie);
-    for (const d of [2, 3, 4, 5]) addRec.run("Crèche", d, null, eva);
+async function seed() {
+  const add = async (name: string, color: string, emoji: string) =>
+    ((await sql`INSERT INTO member (name, color, emoji) VALUES (${name}, ${color}, ${emoji}) RETURNING id`)[0] as { id: number }).id;
 
-    db.prepare("INSERT INTO task (title, member_id) VALUES (?, ?)").run("Commander des pellets", simon);
-    db.prepare("INSERT INTO task (title, member_id) VALUES (?, ?)").run("Devoirs : lecture", leonie);
-    for (const s of ["Lait", "Pain", "Langes"]) db.prepare("INSERT INTO shopping_item (name) VALUES (?)").run(s);
-  })();
+  const simon = await add("Simon", "#2f6fde", "👨");
+  await add("Estelle", "#c2410c", "👩");
+  const leonie = await add("Léonie", "#a21caf", "👧");
+  const eva = await add("Eva", "#059669", "👶");
+
+  const rec: [string, number, string | null, number][] = [];
+  for (let d = 1; d <= 5; d++) rec.push(["Travail GXO", d, "07:00", simon]);
+  for (const d of [1, 2, 4, 5]) rec.push(["École", d, "08:30", leonie]);
+  rec.push(["École (matin)", 3, "08:30", leonie]);
+  for (const d of [2, 3, 4, 5]) rec.push(["Crèche", d, null, eva]);
+
+  await sql.transaction([
+    ...rec.map(([t, d, h, m]) => sql`INSERT INTO recurring_event (title, weekday, time, member_id) VALUES (${t}, ${d}, ${h}, ${m})`),
+    sql`INSERT INTO task (title, member_id) VALUES ('Commander des pellets', ${simon}), ('Devoirs : lecture', ${leonie})`,
+    sql`INSERT INTO shopping_item (name) VALUES ('Lait'), ('Pain'), ('Langes')`,
+  ]);
 }

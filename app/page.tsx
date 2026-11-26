@@ -1,4 +1,4 @@
-import { db, type Event, type Meal, type Member, type Recurring, type ShoppingItem, type Task } from "@/lib/db";
+import { sql, ensureDb, type Event, type Meal, type Member, type Recurring, type ShoppingItem, type Task } from "@/lib/db";
 import { getWeather } from "@/lib/weather";
 import { fmtDay, fmtLong, isoWeekday, todayKey, weekDays } from "@/lib/dates";
 import * as A from "./actions";
@@ -12,13 +12,16 @@ export default async function Home() {
   const days = weekDays(today);
   const [from, to] = [days[0], days[6]];
 
-  const members = db.prepare("SELECT * FROM member ORDER BY id").all() as Member[];
-  const recurring = db.prepare("SELECT * FROM recurring_event ORDER BY time IS NULL, time").all() as Recurring[];
-  const events = db.prepare("SELECT * FROM event WHERE date BETWEEN ? AND ? ORDER BY time IS NOT NULL, time").all(from, to) as Event[];
-  const meals = db.prepare("SELECT * FROM meal WHERE date BETWEEN ? AND ?").all(from, to) as Meal[];
-  const tasks = db.prepare("SELECT * FROM task ORDER BY done, id").all() as Task[];
-  const shopping = db.prepare("SELECT * FROM shopping_item ORDER BY checked, created_at").all() as ShoppingItem[];
-  const weather = await getWeather();
+  await ensureDb();
+  const [members, recurring, events, meals, tasks, shopping, weather] = await Promise.all([
+    sql`SELECT * FROM member ORDER BY id` as unknown as Promise<Member[]>,
+    sql`SELECT * FROM recurring_event ORDER BY time NULLS FIRST` as unknown as Promise<Recurring[]>,
+    sql`SELECT * FROM event WHERE date BETWEEN ${from} AND ${to} ORDER BY time NULLS FIRST` as unknown as Promise<Event[]>,
+    sql`SELECT * FROM meal WHERE date BETWEEN ${from} AND ${to}` as unknown as Promise<Meal[]>,
+    sql`SELECT * FROM task ORDER BY done, id` as unknown as Promise<Task[]>,
+    sql`SELECT * FROM shopping_item ORDER BY checked, created_at` as unknown as Promise<ShoppingItem[]>,
+    getWeather(),
+  ]);
 
   const who = (id: number | null) => members.find((m) => m.id === id);
   const mealFor = (d: string) => meals.find((m) => m.date === d && m.slot === "soir")?.name ?? "";
@@ -109,7 +112,7 @@ export default async function Home() {
               <CheckItem
                 key={t.id}
                 label={`${who(t.member_id) ? who(t.member_id)!.emoji + " " : ""}${t.title}`}
-                checked={!!t.done}
+                checked={t.done}
                 color={who(t.member_id)?.color}
                 onToggle={A.toggleTask.bind(null, t.id)}
               />
@@ -132,7 +135,7 @@ export default async function Home() {
           <h2>🛒 Courses</h2>
           <ul className="list">
             {shopping.map((s) => (
-              <CheckItem key={s.id} label={s.name} checked={!!s.checked} onToggle={A.toggleShopping.bind(null, s.id)} />
+              <CheckItem key={s.id} label={s.name} checked={s.checked} onToggle={A.toggleShopping.bind(null, s.id)} />
             ))}
           </ul>
           <form action={A.addShopping} className="row">

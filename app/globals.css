@@ -68,3 +68,10 @@ input, select { border: 1px solid var(--line); background: var(--bg); border-rad
   .bottom { grid-template-columns: 1fr; }
   .day { min-height: 0; }
 }
+
+/* Page de connexion */
+.login { min-height: 100vh; display: grid; place-items: center; padding: 20px; }
+.login .card { width: min(360px, 100%); }
+.login h1 { margin: 0 0 4px; font-size: 1.3rem; }
+.login input { font-size: 1.3rem; text-align: center; letter-spacing: .2em; }
+.error { color: #c2410c; margin: 0; }

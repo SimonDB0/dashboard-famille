@@ -3,28 +3,33 @@
 Tableau de bord familial à afficher sur une tablette dans la cuisine :
 heure et date, météo d'Horrues, semaine de chacun, soupers, tâches et liste de courses.
 
-**Stack :** Next.js 15 (App Router, Server Actions) · React 19 · SQLite (`better-sqlite3`) · CSS simple.
+**Stack :** Next.js 15 (App Router, Server Actions) · React 19 · Postgres Neon (`@neondatabase/serverless`) · CSS simple.
+Hébergé sur Vercel, protégé par un code d'accès.
 
-## Démarrer
+## Variables d'environnement
+
+| Variable       | Rôle                                                                 |
+|----------------|----------------------------------------------------------------------|
+| `DATABASE_URL` | Base Neon. Ajoutée automatiquement par l'intégration Neon de Vercel. |
+| `ACCESS_CODE`  | Code à taper sur chaque appareil (mémorisé 1 an).                    |
+
+Les tables et les données de départ sont créées automatiquement à la première visite.
+
+## Mise en ligne sur Vercel
+
+1. Projet Vercel relié à ce dépôt : chaque `git push` sur `main` redéploie.
+2. **Storage → Create Database → Neon** puis *Connect* au projet : ça ajoute `DATABASE_URL`.
+3. **Settings → Environment Variables** : ajoute `ACCESS_CODE`.
+4. **Deployments → Redeploy** pour prendre en compte les variables.
+
+## En local
 
 ```bash
 npm install
-npm run dev        # http://localhost:3000
+# .env.local avec DATABASE_URL (copiée depuis Vercel) et ACCESS_CODE
+npx vercel env pull .env.local   # ou à la main
+npm run dev                       # http://localhost:3000
 ```
-
-La base `data/famille.db` est créée et remplie toute seule au premier lancement
-(Simon, Estelle, Léonie, Eva + horaires de la semaine). Pour repartir de zéro : supprime le dossier `data/`.
-
-## Mettre en route à la maison
-
-```bash
-npm run build
-npm start          # écoute sur 0.0.0.0:3000
-```
-
-Sur la tablette, ouvre `http://<IP-du-PC>:3000` et ajoute la page à l'écran d'accueil.
-La page se rafraîchit toute seule toutes les 5 minutes.
-Pour qu'elle tourne en permanence : un Raspberry Pi, un vieux PC, ou un conteneur Docker à côté de Home Assistant.
 
 ## Structure
 
@@ -37,7 +42,10 @@ app/
     CheckItem.tsx     → case à cocher avec mise à jour optimiste
   globals.css         → style (mode clair/sombre automatique)
 lib/
-  db.ts               → connexion SQLite, création des tables, données de départ
+  db.ts               → connexion Postgres, création des tables, données de départ
+  auth.ts             → hash du code d'accès
+middleware.ts         → redirige vers /login sans le bon cookie
+app/login/page.tsx    → page du code d'accès
   dates.ts            → semaine en cours, jours (heure de Bruxelles)
   weather.ts          → météo Open-Meteo (gratuit, sans clé)
 ```
@@ -53,7 +61,7 @@ lib/
 | `task`            | tâches, assignables à quelqu'un                            |
 | `shopping_item`   | liste de courses                                           |
 
-Les horaires de départ (travail, école, crèche) se changent dans `seed()` de `lib/db.ts`.
+Les horaires de départ (travail, école, crèche) se changent dans `seed()` de `lib/db.ts` (pris en compte seulement si la table `member` est vide).
 
 ## Idées pour la suite
 
